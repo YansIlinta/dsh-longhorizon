@@ -1,5 +1,7 @@
 # longhorizon/ — verified long-horizon agent control layer
 
+English | [中文](README.zh.md)
+
 Durable task state, step budget, failure/no-progress/replan guards, and a
 model-visible Task State section for long-horizon agent runs. The run's own
 facts (objective, status, revision, requirements, replan control state) live in

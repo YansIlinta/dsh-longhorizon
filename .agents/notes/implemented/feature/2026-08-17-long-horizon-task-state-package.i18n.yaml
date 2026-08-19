@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/feature/2026-08-17-long-horizon-task-state-package.md
+2026-08-17-long-horizon-task-state-package.md: 079f660b0f79b7055d92c23a19a5599dc2e81d4d
+2026-08-17-long-horizon-task-state-package.zh.md: a21d97ff40897a8d1a443f6a1d9df2e24d8e34be

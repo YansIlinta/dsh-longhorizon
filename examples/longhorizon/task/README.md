@@ -1,5 +1,7 @@
 # Pipeline Repair Task
 
+English | [中文](README.zh.md)
+
 Objective: repair the pipeline so all 12 files in `data/` are processed successfully, then write `REPORT.md` (per-file results + what was fixed) and verify by rerunning.
 
 Success criteria:

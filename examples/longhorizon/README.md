@@ -1,5 +1,7 @@
 # Long-Horizon Agent Demo (product stack)
 
+English | [中文](README.zh.md)
+
 A real-LLM long-horizon run on the shipped headless profile, powered by the
 product package `@deepseek-ai/dsh-longhorizon` (durable task state, step
 budget, failure/replan guards, Task State section, runner, stream invariant).

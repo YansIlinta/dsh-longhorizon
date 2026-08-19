@@ -1,5 +1,7 @@
 # Search task set
 
+English | [中文](README.zh.md)
+
 Four targeted tasks exercising the demo's workspace-search abilities
 (`glob` / `grep` / `read`) over the task workspace in `../task/`. Each runs
 through the same long-horizon runner with the demo overlay; `--max-steps 15`
