@@ -1,14 +1,28 @@
 /**
- * Pure replay fold of the durable `longhorizon/state` stream: revision
- * continuity, create/update/clear semantics, and fail-loud decoding of
- * malformed changes. The fold is the single query surface for the service,
- * the invariant companion, and replay consumers.
+ * Pure replay fold of the durable `longhorizon/state` and `longhorizon/evidence`
+ * streams: revision continuity, create/update/clear semantics, deterministic
+ * plan-revision detection, step-level no-progress measurement, and fail-loud
+ * decoding of malformed changes. The fold is the single query surface for the
+ * service, the invariant companion, and replay consumers.
  * @module @deepseek-ai/dsh-longhorizon/fold
  */
 
-import type { SessionEvent } from '@deepseek-ai/dsh-session'
+import { createHash } from 'node:crypto'
+import { TOOL_OUTCOME_UNKNOWN, type SessionEvent } from '@deepseek-ai/dsh-session'
 import './domain.ts'
-import type { TaskSnapshot, TaskStateChange, TaskStateView } from './types.ts'
+import type {
+  EvidenceStatus,
+  RequirementVerification,
+  RequirementVerifier,
+  TaskPlanningItem,
+  TaskRequirement,
+  TaskSnapshot,
+  TaskStateChange,
+  TaskStateView,
+  VerificationEvidence,
+} from './types.ts'
+
+export type { TaskPlanningItem } from './types.ts'
 
 /** The text of a content block, or undefined when the block is not text. */
 export function blockText(block: { readonly type?: string; readonly text?: unknown }): string | undefined {
@@ -34,10 +48,52 @@ function reqNumber(value: Record<string, unknown>, key: string): number {
   return field
 }
 
+/** Read a required positive integer field. */
+function reqRevision(value: Record<string, unknown>, key: string): number {
+  const field = reqNumber(value, key)
+  if (!Number.isInteger(field) || field <= 0) throw new Error(`longhorizon: invalid revision field "${key}"`)
+  return field
+}
+
+/** Decode one verifier specification through runtime validation. */
+function decodeVerifier(value: unknown): RequirementVerifier {
+  if (!isRecord(value)) throw new Error('longhorizon: verifier is not a record')
+  switch (value['type']) {
+    case 'artifact':
+      return { type: 'artifact', path: reqString(value, 'path') }
+    case 'command': {
+      const command = value['command']
+      if (!Array.isArray(command) || command.length === 0 || !command.every(part => typeof part === 'string')) {
+        throw new Error('longhorizon: invalid command verifier argv')
+      }
+      return { type: 'command', command: [...command] }
+    }
+    default:
+      throw new Error(`longhorizon: invalid verifier type ${String(value['type'])}`)
+  }
+}
+
+/** Decode one requirement record through runtime validation. */
+function decodeRequirement(value: unknown): TaskRequirement {
+  if (!isRecord(value)) throw new Error('longhorizon: requirement is not a record')
+  const required = value['required']
+  if (typeof required !== 'boolean') throw new Error('longhorizon: requirement "required" must be a boolean')
+  return {
+    id: reqString(value, 'id'),
+    description: reqString(value, 'description'),
+    required,
+    verifier: decodeVerifier(value['verifier']),
+  }
+}
+
 /**
  * Decode a durable snapshot payload through runtime validation (the
  * durable-log boundary): kinds, versions, required fields, and the closed
- * status vocabulary are checked, never trusted from a type assertion.
+ * status vocabulary are checked, never trusted from a type assertion. Fields
+ * added after the v1 format shipped decode with deterministic defaults —
+ * `taskRevision` 1, `replanRequired` false, `requirements` empty — so an older
+ * snapshot replays without silent reinterpretation (an empty requirement list
+ * is later refused as non-completable by the completion gate).
  * @param value - the raw event payload.
  * @returns the validated snapshot.
  */
@@ -48,12 +104,30 @@ function decodeTaskSnapshot(value: unknown): TaskSnapshot {
   if (typeof status !== 'string' || !statuses.includes(status)) {
     throw new Error(`longhorizon: invalid status ${String(status)}`)
   }
+  const revisionField = value['taskRevision']
+  if (revisionField !== undefined && (typeof revisionField !== 'number' || !Number.isInteger(revisionField) || revisionField <= 0)) {
+    throw new Error(`longhorizon: invalid taskRevision ${JSON.stringify(revisionField)}`)
+  }
+  const replanRequired = value['replanRequired']
+  if (replanRequired !== undefined && typeof replanRequired !== 'boolean') {
+    throw new Error('longhorizon: replanRequired must be a boolean')
+  }
+  const planRevisionCount = value['planRevisionCount']
+  if (planRevisionCount !== undefined && (typeof planRevisionCount !== 'number' || !Number.isInteger(planRevisionCount) || planRevisionCount < 0)) {
+    throw new Error(`longhorizon: invalid planRevisionCount ${JSON.stringify(planRevisionCount)}`)
+  }
+  const requirements = value['requirements']
+  if (requirements !== undefined && !Array.isArray(requirements)) throw new Error('longhorizon: requirements must be an array')
   return {
     taskId: reqString(value, 'taskId') as TaskSnapshot['taskId'],
     objective: reqString(value, 'objective'),
     status: status as TaskSnapshot['status'],
     maxSteps: reqNumber(value, 'maxSteps'),
     replanCount: reqNumber(value, 'replanCount'),
+    planRevisionCount: planRevisionCount === undefined ? 0 : planRevisionCount,
+    taskRevision: revisionField === undefined ? 1 : revisionField,
+    replanRequired: replanRequired === undefined ? false : replanRequired,
+    requirements: Array.isArray(requirements) ? requirements.map(decodeRequirement) : [],
     updatedAt: reqNumber(value, 'updatedAt'),
   }
 }
@@ -143,11 +217,122 @@ export function foldTaskState(events: readonly SessionEvent[]): TaskStateView {
   return view
 }
 
-/** One folded plan line; text originates from the model's todo_write list. */
-export interface TaskPlanningItem {
-  id: string
-  text: string
-  status: 'pending' | 'in-progress' | 'done' | 'failed'
+/**
+ * Decode one durable `longhorizon/evidence` event through runtime validation.
+ * @param event - the raw session event.
+ * @returns the validated verification evidence.
+ * @throws on a malformed or unsupported evidence payload.
+ */
+export function decodeVerificationEvidence(event: SessionEvent<'longhorizon/evidence'>): VerificationEvidence {
+  const value: unknown = event.data
+  if (!isRecord(value) || value['kind'] !== 'longhorizon/evidence') {
+    throw new Error('longhorizon: expected a longhorizon/evidence event')
+  }
+  if (value['version'] !== 1) {
+    throw new Error(`longhorizon: unsupported evidence event version ${String(value['version'])}`)
+  }
+  const evidence = value['evidence']
+  if (!isRecord(evidence)) throw new Error('longhorizon: evidence payload is not a record')
+  const status: unknown = evidence['status']
+  const statuses: EvidenceStatus[] = ['passed', 'failed', 'unknown']
+  if (typeof status !== 'string' || !statuses.includes(status as EvidenceStatus)) {
+    throw new Error(`longhorizon: invalid evidence status ${String(status)}`)
+  }
+  const verifierType: unknown = evidence['verifierType']
+  if (verifierType !== 'artifact' && verifierType !== 'command') {
+    throw new Error(`longhorizon: invalid evidence verifierType ${String(verifierType)}`)
+  }
+  const readOptionalString = (key: string): string | undefined => {
+    const field = evidence[key]
+    if (field === undefined) return undefined
+    if (typeof field !== 'string') throw new Error(`longhorizon: invalid evidence ${key}`)
+    return field
+  }
+  const exitCode = evidence['exitCode']
+  if (exitCode !== undefined && (typeof exitCode !== 'number' || !Number.isInteger(exitCode))) {
+    throw new Error('longhorizon: invalid evidence exitCode')
+  }
+  const artifactPath = readOptionalString('artifactPath')
+  const artifactHash = readOptionalString('artifactHash')
+  const command = readOptionalString('command')
+  return {
+    requirementId: reqString(evidence, 'requirementId'),
+    taskRevision: reqRevision(evidence, 'taskRevision'),
+    status: status as EvidenceStatus,
+    verifierType,
+    ...(artifactPath === undefined ? {} : { artifactPath }),
+    ...(artifactHash === undefined ? {} : { artifactHash }),
+    ...(command === undefined ? {} : { command }),
+    ...(exitCode === undefined ? {} : { exitCode }),
+    checkedAt: reqString(evidence, 'checkedAt'),
+  }
+}
+
+/** Fold every durable evidence event in seq order, failing loud on malformed ones. */
+export function foldEvidence(events: readonly SessionEvent[]): VerificationEvidence[] {
+  const out: VerificationEvidence[] = []
+  for (const event of events) {
+    if (event.type !== 'longhorizon/evidence') continue
+    out.push(decodeVerificationEvidence(event))
+  }
+  return out
+}
+
+/**
+ * The latest evidence for one requirement at one task revision, or undefined.
+ * Older-revision evidence is deliberately never matched: it cannot prove the
+ * current revision.
+ */
+export function latestEvidenceForRequirement(
+  events: readonly SessionEvent[],
+  requirementId: string,
+  taskRevision: number,
+): VerificationEvidence | undefined {
+  for (const event of [...events].reverse()) {
+    if (event.type !== 'longhorizon/evidence') continue
+    const evidence = decodeVerificationEvidence(event)
+    if (evidence.requirementId === requirementId && evidence.taskRevision === taskRevision) return evidence
+  }
+  return undefined
+}
+
+/** Whether two evidence values are meaningfully identical (ignoring timestamps). */
+export function evidenceEquivalent(a: VerificationEvidence, b: VerificationEvidence): boolean {
+  return a.requirementId === b.requirementId
+    && a.taskRevision === b.taskRevision
+    && a.status === b.status
+    && a.verifierType === b.verifierType
+    && a.artifactPath === b.artifactPath
+    && a.artifactHash === b.artifactHash
+    && a.command === b.command
+    && a.exitCode === b.exitCode
+}
+
+/** Each requirement's verification state under the current snapshot. */
+export function requirementVerificationStatuses(
+  snapshot: TaskSnapshot,
+  events: readonly SessionEvent[],
+): RequirementVerification[] {
+  return snapshot.requirements.map((requirement) => {
+    const latest = latestEvidenceForRequirement(events, requirement.id, snapshot.taskRevision)
+    return {
+      requirement,
+      ...(latest === undefined ? {} : { latest }),
+      verified: latest !== undefined && latest.status === 'passed',
+    }
+  })
+}
+
+/**
+ * The completion invariant, enforced as the ONLY path into `done`: at least
+ * one requirement must exist (an empty required set is not evidence), and every
+ * required requirement must carry latest current-revision passing evidence.
+ */
+export function allRequiredVerified(snapshot: TaskSnapshot, events: readonly SessionEvent[]): boolean {
+  const required = snapshot.requirements.filter(requirement => requirement.required)
+  if (required.length === 0) return false
+  return required.every(requirement =>
+    latestEvidenceForRequirement(events, requirement.id, snapshot.taskRevision)?.status === 'passed')
 }
 
 /** Map a todo list status onto the plan item vocabulary. */
@@ -160,10 +345,17 @@ function planStatus(status: string): TaskPlanningItem['status'] {
   }
 }
 
+/** Stable content-derived plan item id (short SHA-256 of the text), not the position. */
+function planItemId(text: string): string {
+  return createHash('sha256').update(text).digest('hex').slice(0, 12)
+}
+
 /**
  * Fold the plan from the latest whole-list `todo/write` snapshot. The plan is
  * deliberately NOT stored in the task snapshot: the todo list is the model's
  * own durable plan artifact, and the snapshot only mirrors run counters.
+ * Item ids are content-derived (stable across list reordering), never array
+ * positions.
  * @param events - the append-origin session events.
  * @returns the current plan items, empty before the first todo_write.
  */
@@ -171,22 +363,80 @@ export function foldPlan(events: readonly SessionEvent[]): TaskPlanningItem[] {
   const latest = [...events].reverse().find(event => event.type === 'todo/write')
   if (latest === undefined) return []
   return latest.data.todos.map((todo, index) => ({
-    id: String(index),
+    id: planItemId(todo.content),
+    index,
     text: todo.content,
     status: planStatus(todo.status),
   }))
 }
 
+/** Deterministic content digest of a plan (ordered `id`+`text` pairs, status-free). */
+export function planDigest(items: readonly TaskPlanningItem[]): string {
+  return createHash('sha256').update(JSON.stringify(items.map(item => [item.id, item.text]))).digest('hex')
+}
+
+/** The seq of the last `longhorizon/state` event whose snapshot armed a replan. */
+export function lastReplanArmedSeq(events: readonly SessionEvent[]): number | undefined {
+  let armed: number | undefined
+  for (const event of events) {
+    if (event.type !== 'longhorizon/state') continue
+    const change = decodeTaskStateChange(event)
+    if (change.operation !== 'clear' && change.snapshot.replanRequired) armed = event.seq
+  }
+  return armed
+}
+
+/**
+ * The plan digest in force when the replan was last armed: the latest plan
+ * BEFORE the arming state event. The model must produce a materially different
+ * plan — not a status-only rewrite — to clear the replan request.
+ */
+export function replanReferenceDigest(events: readonly SessionEvent[]): string | undefined {
+  const armed = lastReplanArmedSeq(events)
+  if (armed === undefined) return undefined
+  return planDigest(foldPlan(events.filter(event => event.seq < armed)))
+}
+
+/** The current plan digest, or undefined before the first todo_write. */
+export function currentPlanDigest(events: readonly SessionEvent[]): string | undefined {
+  return planDigest(foldPlan(events))
+}
+
+/**
+ * Whether a pending replan request is satisfied: the replan was armed AND the
+ * current plan digest differs from the digest at arm time. A reject-forever
+ * of identical plans leaves the replan armed.
+ */
+export function planRevisionAccepted(events: readonly SessionEvent[]): boolean {
+  const armed = lastReplanArmedSeq(events)
+  if (armed === undefined) return false
+  const reference = replanReferenceDigest(events)
+  const current = currentPlanDigest(events)
+  return reference !== undefined && reference !== current
+}
+
 /**
  * Fold failure counters from `tool/result` events, correlating tool names via
- * `tool/call`. Per-tool consecutive runs reset on that tool's success.
+ * `tool/call`, and stamping the task revision in force when each failure
+ * occurred (`longhorizon/state` events drive it). Per-tool consecutive runs
+ * reset on that tool's success.
  * @param events - the append-origin session events.
- * @returns the folded counters.
+ * @returns the folded counters plus per-fingerprint totals and the latest failure.
  */
 export interface FoldedFailures {
   total: number
   consecutiveByTool: Record<string, number>
   byTool: Record<string, number>
+  byFingerprint: Record<string, number>
+  latest?: { tool: string; fingerprint: string; taskRevision: number }
+  unknownOutcomes: number
+  latestUnknown?: { tool: string; taskRevision: number }
+}
+
+/** Normalize a tool-result failure message into a bounded, stable fingerprint token. */
+function failureToken(tool: string, code: string | undefined, text: string): string {
+  const normalized = text.replace(/\s+/g, ' ').trim().toLowerCase().slice(0, 80)
+  return `${tool}:${code ?? 'ERR'}:${normalized}`
 }
 
 export function foldFailures(events: readonly SessionEvent[]): FoldedFailures {
@@ -194,8 +444,20 @@ export function foldFailures(events: readonly SessionEvent[]): FoldedFailures {
   for (const event of events) {
     if (event.type === 'tool/call') names.set(event.data.callId, event.data.name)
   }
-  const counts = { total: 0, consecutiveByTool: {} as Record<string, number>, byTool: {} as Record<string, number> }
+  const counts: FoldedFailures = {
+    total: 0,
+    consecutiveByTool: {},
+    byTool: {},
+    byFingerprint: {},
+    unknownOutcomes: 0,
+  }
+  let revision = 1
   for (const event of events) {
+    if (event.type === 'longhorizon/state') {
+      const change = decodeTaskStateChange(event)
+      if (change.operation !== 'clear') revision = change.snapshot.taskRevision
+      continue
+    }
     if (event.type !== 'tool/result') continue
     const source = event.data.message.source
     const tool = names.get(source.callId) ?? 'unknown'
@@ -203,9 +465,20 @@ export function foldFailures(events: readonly SessionEvent[]): FoldedFailures {
       counts.consecutiveByTool[tool] = 0
       continue
     }
+    // A started-but-unsettled effect (crash-repair marks it TOOL_OUTCOME_UNKNOWN)
+    // is NOT a failure: the controller must not assume it failed or succeeded.
+    if (event.data.error.code === TOOL_OUTCOME_UNKNOWN) {
+      counts.unknownOutcomes += 1
+      counts.latestUnknown = { tool, taskRevision: revision }
+      continue
+    }
     counts.total += 1
     counts.byTool[tool] = (counts.byTool[tool] ?? 0) + 1
     counts.consecutiveByTool[tool] = (counts.consecutiveByTool[tool] ?? 0) + 1
+    const text = event.data.message.content.map(blockText).filter((part): part is string => part !== undefined).join(' ')
+    const fingerprint = failureToken(tool, event.data.error.code, text)
+    counts.byFingerprint[fingerprint] = (counts.byFingerprint[fingerprint] ?? 0) + 1
+    counts.latest = { tool, fingerprint, taskRevision: revision }
   }
   return counts
 }
@@ -240,6 +513,32 @@ export function foldStepCount(events: readonly SessionEvent[]): number {
 /** The longest per-tool consecutive failure run — the value the guards compare. */
 export function consecutiveFailurePeak(failures: { readonly consecutiveByTool: Readonly<Record<string, number>> }): number {
   return Math.max(0, ...Object.values(failures.consecutiveByTool))
+}
+
+/**
+ * The number of executed steps since the last verified-progress marker: a new
+ * `longhorizon/evidence` check or a `todo/write` whose completed-item count
+ * grew. Distinct from tool-error counts — a run can spin without any error and
+ * still make no verified progress.
+ */
+export function foldNoProgressSteps(events: readonly SessionEvent[]): number {
+  let lastProgressSeq = -1
+  let prevCompleted = 0
+  for (const event of events) {
+    if (event.type === 'longhorizon/evidence') {
+      lastProgressSeq = event.seq
+      continue
+    }
+    if (event.type === 'todo/write') {
+      const completed = event.data.todos.filter(todo => todo.status === 'completed').length
+      if (completed > prevCompleted) lastProgressSeq = event.seq
+      prevCompleted = completed
+    }
+  }
+  return events.reduce(
+    (count, event) => (event.type === 'step/start' && event.seq > lastProgressSeq ? count + 1 : count),
+    0,
+  )
 }
 
 /**

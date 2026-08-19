@@ -1,8 +1,8 @@
 /**
- * Long-horizon state domain: durable `longhorizon/state` session events, the
- * replay fold, the `ctx.longhorizon` service, and the shared per-session
- * controller runtime. The controller and runner plugins live in sibling
- * modules and are mounted as subpath rows.
+ * Long-horizon state domain: durable `longhorizon/state` and
+ * `longhorizon/evidence` session events, the replay fold, the `ctx.longhorizon`
+ * service, and the shared per-session controller runtime. The controller and
+ * runner plugins live in sibling modules and are mounted as subpath rows.
  * @module @deepseek-ai/dsh-longhorizon
  */
 
@@ -10,37 +10,22 @@ import { existsSync, readFileSync } from 'node:fs'
 import { Context, Service } from '@deepseek-ai/cordis'
 import type { Session } from '@deepseek-ai/dsh-session'
 import {
+  foldEvidence,
   foldFailures,
+  foldNoProgressSteps,
   foldPlan,
   foldStepCount,
   foldTaskState,
+  requirementVerificationStatuses,
   type TaskPlanningItem,
 } from './fold.ts'
 import { renderTaskStateSection } from './section.ts'
-import type { TaskSnapshot, TaskStateRef, TaskStateView } from './types.ts'
-
-/** Per-session controller runtime; nothing here is durable. */
-export interface TaskRunRuntime {
-  /** Whether a replan nudge is pending a plan refresh. */
-  replanArmed: boolean
-}
-
-const runtimes = new WeakMap<Session, TaskRunRuntime>()
-
-/** The per-session controller runtime, created on first access. */
-export function getRuntime(session: Session): TaskRunRuntime {
-  let runtime = runtimes.get(session)
-  if (runtime === undefined) {
-    runtime = { replanArmed: false }
-    runtimes.set(session, runtime)
-  }
-  return runtime
-}
-
-/** Set the replan-armed flag for one session. */
-export function markReplanArmed(session: Session, armed: boolean): void {
-  getRuntime(session).replanArmed = armed
-}
+import type {
+  TaskSnapshot,
+  TaskStateRef,
+  TaskStateView,
+  VerificationEvidence,
+} from './types.ts'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -50,7 +35,8 @@ declare module '@deepseek-ai/cordis' {
 
 /**
  * The durable long-horizon state service: fold the stream, read the current
- * snapshot, and append revisioned snapshot mutations.
+ * snapshot, append revisioned snapshot mutations, and append verification
+ * evidence.
  */
 export class LongHorizonService extends Service {
   constructor(ctx: Context) {
@@ -114,6 +100,21 @@ export class LongHorizonService extends Service {
       clearedAt: Date.now(),
     })
   }
+
+  /**
+   * Append one durable verification check. The stream stays O(transitions)
+   * because callers deduplicate unchanged outcomes before appending, but the
+   * event itself is the complete replayable record of one check.
+   * @param session - the run's session.
+   * @param evidence - the verification evidence (bound to requirement + revision).
+   */
+  appendEvidence(session: Session, evidence: VerificationEvidence): void {
+    session.append('longhorizon/evidence', {
+      kind: 'longhorizon/evidence',
+      version: 1,
+      evidence,
+    })
+  }
 }
 
 /** The derived run facts folded from the base session log. */
@@ -121,14 +122,24 @@ export interface TaskRunDerived {
   readonly plan: readonly TaskPlanningItem[]
   readonly stepCount: number
   readonly failures: ReturnType<typeof foldFailures>
+  /** Per-requirement verification state under the current snapshot. */
+  readonly requirements: ReturnType<typeof requirementVerificationStatuses>
+  /** Consecutive steps since the last verified-progress marker. */
+  readonly noProgressSteps: number
+  /** The durable verification evidence stream, newest first by event seq. */
+  readonly evidence: readonly VerificationEvidence[]
 }
 
 /** Fold the derived run facts for render. */
 export function derivedFor(session: Session): TaskRunDerived {
+  const snapshot = foldTaskState(session.events).snapshot
   return {
     plan: foldPlan(session.events),
     stepCount: foldStepCount(session.events),
     failures: foldFailures(session.events),
+    requirements: snapshot === undefined ? [] : requirementVerificationStatuses(snapshot, session.events),
+    noProgressSteps: foldNoProgressSteps(session.events),
+    evidence: [...foldEvidence(session.events)].reverse(),
   }
 }
 
@@ -166,7 +177,7 @@ export function installTaskStateSection(agentCtx: Context, service: LongHorizonS
         snapshot,
         derivedFor(session),
         readFacts(factsPath).join('\n'),
-        getRuntime(session).replanArmed,
+        snapshot.replanRequired,
       )
     },
   })
@@ -177,5 +188,6 @@ export * from './fold.ts'
 export * from './guards.ts'
 export * from './section.ts'
 export * from './trajectory.ts'
+export * from './verification.ts'
 export type * from './types.ts'
 export default LongHorizonService

@@ -25,14 +25,107 @@ export interface TaskFailureCounts {
   readonly consecutiveByTool: Readonly<Record<string, number>>
   /** Per-tool total failing results. */
   readonly byTool: Readonly<Record<string, number>>
+  /** Per-fingerprint failure totals; the fingerprint is tool + code + normalized message. */
+  readonly byFingerprint: Readonly<Record<string, number>>
+  /** The last failing tool result's identity and fingerprint, when one exists. */
+  readonly latest?: {
+    readonly tool: string
+    readonly fingerprint: string
+    readonly taskRevision: number
+  }
+  /**
+   * Tool results whose effect intent was started but whose durable outcome is
+   * UNKNOWN (a process crash before the result persisted; the harness marks
+   * these with `TOOL_OUTCOME_UNKNOWN` at load-repair). Never counted as
+   * failures: the controller must not assume them failed OR succeeded.
+   */
+  readonly unknownOutcomes: number
+  /** The most recent outcome-unknown tool result, when one exists. */
+  readonly latestUnknown?: {
+    readonly tool: string
+    readonly taskRevision: number
+  }
+}
+
+/**
+ * One verifier specification for a task requirement. An `artifact` verifier
+ * proves existence and content identity of a workspace file; a `command`
+ * verifier runs a host-side argv and passes on exit code 0.
+ */
+export type RequirementVerifier =
+  | { readonly type: 'artifact'; readonly path: string }
+  | { readonly type: 'command'; readonly command: readonly string[] }
+
+/**
+ * A requirement the run must satisfy to be allowed to conclude. The completion
+ * invariant: a task is `done` IFF every `required` requirement has passing
+ * verification evidence at the current task revision.
+ */
+export interface TaskRequirement {
+  /** Stable identity the evidence events bind to (`<verifierType>:<subject>`). */
+  readonly id: string
+  /** Human description shown in the Task State section. */
+  readonly description: string
+  /** Whether this requirement gates task completion. */
+  readonly required: boolean
+  /** How the requirement is verified. */
+  readonly verifier: RequirementVerifier
+}
+
+/** Outcome of one host-side verification check. */
+export type EvidenceStatus = 'passed' | 'failed' | 'unknown'
+
+/**
+ * Durable verification evidence for one requirement at one task revision,
+ * carried by every `longhorizon/evidence` event. Evidence is per-revision: an
+ * older revision's evidence never counts for the current snapshot.
+ */
+export interface VerificationEvidence {
+  /** The requirement this check exercised. */
+  readonly requirementId: string
+  /** The task revision this check verifies against. */
+  readonly taskRevision: number
+  /** `passed` is the only status that satisfies a required requirement. */
+  readonly status: EvidenceStatus
+  readonly verifierType: RequirementVerifier['type']
+  /** Workspace-relative artifact path, for artifact verifiers. */
+  readonly artifactPath?: string
+  /** SHA-256 hex digest of the artifact content, for artifact verifiers. */
+  readonly artifactHash?: string
+  /** Shell-joined command text, for command verifiers. */
+  readonly command?: string
+  /** Process exit code, for command verifiers. */
+  readonly exitCode?: number
+  /** ISO timestamp of the check. */
+  readonly checkedAt: string
+}
+
+/** One plan line rendered from the model's todo_write list. */
+export interface TaskPlanningItem {
+  /** Stable content-derived id (short SHA-256 of the text), never the position. */
+  readonly id: string
+  /** Positional index for display only. */
+  readonly index: number
+  readonly text: string
+  readonly status: 'pending' | 'in-progress' | 'done' | 'failed'
+}
+
+/** One requirement and its state under the current snapshot. */
+export interface RequirementVerification {
+  readonly requirement: TaskRequirement
+  /** Latest evidence at the current revision, absent before the first check. */
+  readonly latest?: VerificationEvidence
+  /** True only when the latest current-revision evidence is `passed`. */
+  readonly verified: boolean
 }
 
 /**
  * The durable run state, carried by every non-clear `longhorizon/state`
  * mutation as a post-mutation snapshot. Only the run's OWN facts live here:
- * objective, status, budget, and replan count. Plan, step count, failure
- * counters, and facts are DERIVED at render from the base session log
- * (`todo/write`, `step/start`, `tool/result`, and the model's logged file
+ * objective, status, budget, replan control state, and the requirement
+ * definitions. Plan, step count, failure counters, evidence, and facts are
+ * DERIVED at render from the base session log (`todo/write`, `step/start`,
+ * `tool/result`, `longhorizon/evidence`, and the model's logged file
  * writes) — the log is their single source of truth, and the snapshot never
  * duplicates them.
  */
@@ -45,8 +138,21 @@ export interface TaskSnapshot {
   readonly status: TaskStatus
   /** Hard step budget for the run. */
   readonly maxSteps: number
-  /** Loop-driven replan coercions delivered so far. */
+  /** Replan requests issued so far (durable; feeds the stall limiter). */
   readonly replanCount: number
+  /** Accepted plan revisions so far (durable; incremented only on acceptance). */
+  readonly planRevisionCount: number
+  /**
+   * Durable task revision. Bumped on material change (objective/schema,
+   * accepted plan revision, requirement definition change); verification
+   * evidence binds to it, so old-revision evidence never carries a new
+   * revision.
+   */
+  readonly taskRevision: number
+  /** Durable replan-request state; cleared only by an accepted plan revision. */
+  readonly replanRequired: boolean
+  /** The requirements this run must verify (created from runner config). */
+  readonly requirements: readonly TaskRequirement[]
   /** Epoch milliseconds of the snapshot. */
   readonly updatedAt: number
 }

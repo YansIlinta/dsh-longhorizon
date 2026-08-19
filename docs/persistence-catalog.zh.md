@@ -496,6 +496,39 @@ export type SessionEvent<T extends SessionEventType = SessionEventType> = {
 
 来源：[`packages/llm/llm-retry/src/types.ts:11`](../packages/llm/llm-retry/src/types.ts)
 
+### `longhorizon/*`
+
+<a id="longhorizonevidence--log-only"></a>
+
+#### `longhorizon/evidence` — log-only
+
+```ts persistence-catalog
+/**
+ * One host-side verification check for one requirement at one task
+ * revision. Appended only when the check outcome or content identity
+ * changed, so the stream stays O(transitions) while remaining a complete
+ * replay source for the requirement verification state.
+ * @param evidence - the verification evidence, bound to its requirementId and taskRevision.
+ */
+'longhorizon/evidence': LongHorizonEvidenceChangeMeta
+```
+
+来源：[`packages/longhorizon/longhorizon/src/domain.ts:59`](../packages/longhorizon/longhorizon/src/domain.ts)
+
+<a id="longhorizonstate--log-only"></a>
+
+#### `longhorizon/state` — log-only
+
+```ts persistence-catalog
+/**
+ * Complete post-mutation task snapshot or clear tombstone for one
+ * long-horizon run. The run identity is the owning session id.
+ */
+'longhorizon/state': TaskStateChangeMeta
+```
+
+来源：[`packages/longhorizon/longhorizon/src/domain.ts:51`](../packages/longhorizon/longhorizon/src/domain.ts)
+
 ### `permission/*`
 
 <a id="permissionpreset--log-only"></a>

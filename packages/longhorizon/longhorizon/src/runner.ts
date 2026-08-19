@@ -1,13 +1,14 @@
 /**
  * Long-horizon runner plugin: the one-shot driver that creates or resumes a
- * run, seeds its durable snapshot, installs the Task State section, drives it
- * through the completion gate, and exits with the run's status code. Mounted
- * as the `@deepseek-ai/dsh-longhorizon/runner` row.
+ * run, seeds its durable snapshot and requirements, installs the Task State
+ * section, drives it through verified completion, and exits with the run's
+ * status code. The model proposes progress; only host-side verification
+ * evidence for every required requirement at the current revision allows the
+ * run to conclude as `done`. Mounted as the `@deepseek-ai/dsh-longhorizon/runner`
+ * row.
  * @module @deepseek-ai/dsh-longhorizon/runner
  */
 
-import { spawnSync } from 'node:child_process'
-import { existsSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
@@ -15,28 +16,61 @@ import z from '@deepseek-ai/schemastery'
 import { installModelSelection } from '@deepseek-ai/dsh-agent'
 import type { AgentHandle, ModelSelectionRef } from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-agent-default-model'
-import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { createUserMessage, type UserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
-import type { SessionEvent } from '@deepseek-ai/dsh-session'
+import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/cordis-plugin-loader'
 import type {} from '@deepseek-ai/dsh-cmdline'
 import {
+  buildEvidence,
   continueMessage,
   derivedFor,
-  foldConsecutiveTextEndings,
+  evidenceEquivalent,
+  allRequiredVerified,
+  latestEvidenceForRequirement,
   installTaskStateSection,
   lastTurnEnd,
   renderTrajectory,
-  turnEndedWithText,
+  verifyRequirement,
   writeTrajectory,
+  type LongHorizonService,
+  type TaskRequirement,
+  type TaskSnapshot,
+  type VerificationEvidence,
 } from './index.ts'
+import { budgetExhausted, finalExitCode, isTerminalStatus } from './guards.ts'
 
 /** Stable Cordis plugin name. */
 export const name = 'longhorizon-runner'
 
 /** Services required before the one-shot run can start. */
 export const inject = ['agentDefaultModel', 'agents', 'longhorizon', 'sessions', 'systemPrompt']
+
+/** One verifier specification declared in runner config. */
+type RequirementVerifierConfig =
+  | { type: 'artifact'; path: string }
+  | { type: 'command'; command: string[] }
+
+/** One requirement declaration in runner config (additive over the legacy artifacts surface). */
+interface RequirementConfig {
+  id: string
+  description: string
+  required: boolean
+  verifier: RequirementVerifierConfig
+}
+
+const VerifierSchema: z<RequirementVerifierConfig> = z.union([
+  z.object({ type: z.const('artifact'), path: z.string().required() }),
+  z.object({ type: z.const('command'), command: z.array(z.string()).min(1).required() }),
+])
+
+const RequirementSpecSchema: z<RequirementConfig> = z.object({
+  id: z.string().required(),
+  description: z.string().required(),
+  required: z.boolean().default(true),
+  verifier: VerifierSchema,
+})
 
 /** Plugin config: the task plus the run tunables. */
 export interface Config {
@@ -50,10 +84,12 @@ export interface Config {
   trajectoryPath?: string
   /** Workspace root; defaults to the invocation cwd. */
   workspace?: string
-  /** Declared final artifacts verified before the run is allowed to conclude. */
+  /** Declared required artifact requirements (legacy surface; maps to artifact verifiers). */
   artifacts?: string[]
-  /** Optional host-side verification command: when set, an artifact is only confirmed when it exits 0. */
+  /** Optional host-side verification command (legacy surface; becomes a command requirement). */
   artifactVerify?: string[]
+  /** Explicit requirement declarations; when present, used verbatim over the legacy mapping. */
+  requirements?: RequirementConfig[]
   /** Facts file path relative to the workspace. */
   factsFile?: string
 }
@@ -66,6 +102,7 @@ export const Config: z<Config> = z.object({
   workspace: z.string().required(false),
   artifacts: z.array(z.string()).required(false),
   artifactVerify: z.array(z.string()).required(false),
+  requirements: z.array(RequirementSpecSchema).required(false),
   factsFile: z.string().required(false),
 })
 
@@ -115,28 +152,72 @@ function fail(io: RunnerIo, error: unknown): void {
   io.exit(1)
 }
 
-/** Run the host-side artifact verification command; true when it exits 0. */
-function verifyArtifacts(argv: readonly string[], workspace: string): boolean {
-  const command = argv[0]
-  if (command === undefined) return false
-  const result = spawnSync(command, argv.slice(1), { cwd: workspace, encoding: 'utf8' })
-  return result.status === 0
-}
-
 /**
- * The artifacts the run cannot yet confirm: missing files, or — when
- * `artifactVerify` is configured — files that fail the host-side check.
+ * Resolve the run's requirements from config. The legacy `artifacts` surface
+ * maps to required artifact verifiers and `artifactVerify` to a required
+ * command verifier; when the explicit `requirements` surface is present it is
+ * used verbatim. The default run always carries at least the REPORT.md
+ * artifact requirement, so a run with no verifiable conditions is not
+ * expressible through the happy path.
  */
-function missingArtifacts(artifacts: readonly string[], workspace: string, verify: readonly string[] | undefined): string[] {
-  if (artifacts.length === 0) return []
-  const missingFiles = artifacts.filter(artifact => !existsSync(join(workspace, artifact)))
-  if (missingFiles.length > 0) return missingFiles
-  if (verify === undefined || verify.length === 0) return []
-  return verifyArtifacts(verify, workspace) ? [] : [...artifacts]
+export function resolveRequirements(config: Config): TaskRequirement[] {
+  // schemastery coerces an absent optional array to `[]`, so absence is an
+  // EMPTY list, not undefined — an explicit empty list is not a declaration.
+  if (config.requirements !== undefined && config.requirements.length > 0) {
+    return config.requirements.map(requirement => ({
+      id: requirement.id,
+      description: requirement.description,
+      required: requirement.required,
+      verifier: requirement.verifier,
+    }))
+  }
+  const artifacts = config.artifacts !== undefined && config.artifacts.length > 0 ? config.artifacts : ['REPORT.md']
+  const requirements: TaskRequirement[] = artifacts.map(path => ({
+    id: `artifact:${path}`,
+    description: `Produce artifact ${path}`,
+    required: true,
+    verifier: { type: 'artifact', path },
+  }))
+  if (config.artifactVerify !== undefined && config.artifactVerify.length > 0) {
+    requirements.push({
+      id: 'command:verify',
+      description: 'Host verification command passes',
+      required: true,
+      verifier: { type: 'command', command: config.artifactVerify },
+    })
+  }
+  return requirements
 }
 
 /**
- * Mount the demo runner: seed state, install the section, then drive the run.
+ * Host-side verification of every requirement under the current snapshot,
+ * appending durable evidence only when the outcome or content identity
+ * changed since the latest check. Re-verified each drive-loop idle, so a
+ * mutated artifact is caught by a fresh hash.
+ */
+function refreshEvidence(session: Session, snapshot: TaskSnapshot, workspace: string, service: LongHorizonService): void {
+  for (const requirement of snapshot.requirements) {
+    const outcome = verifyRequirement(requirement.verifier, workspace)
+    const latest = latestEvidenceForRequirement(session.events, requirement.id, snapshot.taskRevision)
+    const evidence: VerificationEvidence = buildEvidence(requirement, outcome, snapshot.taskRevision)
+    if (latest === undefined || !evidenceEquivalent(latest, evidence)) {
+      service.appendEvidence(session, evidence)
+    }
+  }
+}
+
+/** The unverified required conditions' names, as a human-readable comma list. */
+function unverifiedNames(snapshot: TaskSnapshot, events: readonly SessionEvent[]): { names: string[]; text: string } {
+  const names = snapshot.requirements
+    .filter(requirement => requirement.required
+      && latestEvidenceForRequirement(events, requirement.id, snapshot.taskRevision)?.status !== 'passed')
+    .map(requirement => requirement.description)
+  return { names, text: names.join(', ') }
+}
+
+/**
+ * Mount the demo runner: seed state, install the section, then drive the run
+ * to a verified conclusion (or a terminal status without one).
  * @param ctx - plugin context carrying core services and the launcher-provided exit request.
  * @param config - validated runner config.
  */
@@ -160,8 +241,6 @@ async function run(ctx: Context, config: Config, io: RunnerIo): Promise<void> {
   const workspace = config.workspace ?? process.cwd()
   const factsPath = join(workspace, config.factsFile ?? '.run/facts.md')
   const maxSteps = config.maxSteps ?? 100
-  const artifacts = config.artifacts ?? ['REPORT.md']
-  const artifactVerify = config.artifactVerify
 
   const sessionId = config.resumeSessionId === undefined ? SessionId(`session-${randomUUID()}`) : SessionId(config.resumeSessionId)
   const selection = defaultModel.currentSelection()
@@ -184,80 +263,124 @@ async function run(ctx: Context, config: Config, io: RunnerIo): Promise<void> {
     })
   const agent = handle.agent
 
+  // Resume-terminal guard: fold the durable state first and report a terminal
+  // run immediately — a completed/errored/stalled/budget-exhausted snapshot
+  // must never execute another agent turn.
+  let terminal: TaskSnapshot | undefined
   if (resume) {
     const existing = service.snapshot(agent.session)
     if (existing === undefined) throw new Error(`longhorizon-runner: no task state found for --resume ${sessionId}`)
+    if (isTerminalStatus(existing.status)) {
+      terminal = existing
+    } else if (existing.requirements.length === 0) {
+      throw new Error('longhorizon-runner: resumed snapshot declares no verifiable requirements (created by an older longhorizon); refusing to run without verification evidence')
+    }
   } else {
-    service.append(agent.session, 'create', { taskId: sessionId, objective: config.task, status: 'running', maxSteps, replanCount: 0, updatedAt: Date.now() })
+    service.append(agent.session, 'create', {
+      taskId: sessionId,
+      objective: config.task,
+      status: 'running',
+      maxSteps,
+      replanCount: 0,
+      planRevisionCount: 0,
+      taskRevision: 1,
+      replanRequired: false,
+      requirements: resolveRequirements(config),
+      updatedAt: Date.now(),
+    })
   }
+
   installTaskStateSection(agent.ctx, service, agent.session, factsPath)
   io.stdout.write(`run session: ${sessionId}\n`)
+  const firstSeq = agent.session.seq
 
   try {
-    await agent.whenIdle()
-    const firstSeq = agent.session.seq
-    agent.followup(createUserMessage({
-      content: [{ type: 'text', text: resume ? `Resume: continue from recorded state. ${config.task}` : config.task }],
-      source: { kind: 'user' },
-    }))
+    if (terminal !== undefined) {
+      // Zero additional LLM/agent execution on a terminal resume.
+      await conclude(ctx, config, io, agent, terminal, firstSeq)
+      return
+    }
 
-    // Drive to a verifiable conclusion: loop while the completion gate wants more work.
+    // Drive to a verified conclusion: loop while the completion gate wants
+    // more work. `done` is reachable ONLY through all-required-passing
+    // evidence at the current revision; text-only endings never complete.
+    let firstFollowup = true
     for (;;) {
       await agent.whenIdle()
       const snapshot = service.snapshot(agent.session)
       if (snapshot === undefined) break
-      if (snapshot.status !== 'running') break
+      if (isTerminalStatus(snapshot.status)) break
       const lastEnd = lastTurnEnd(agent.session.events)
       if (lastEnd !== undefined && lastEnd.reason.kind === 'error') break
-      const missing = missingArtifacts(artifacts, workspace, artifactVerify)
-      const stepCount = derivedFor(agent.session).stepCount
-      const textEndings = foldConsecutiveTextEndings(agent.session.events)
-      if (missing.length === 0 || textEndings >= 2 || stepCount >= snapshot.maxSteps) break
-      if (lastEnd === undefined || !turnEndedWithText(agent.session.events, lastEnd.turn)) break
-      io.stderr.write(`dsh: completion gate — unconfirmed artifacts, continuing (text endings ${textEndings})\n`)
-      agent.followup(continueMessage(missing))
+      refreshEvidence(agent.session, snapshot, workspace, service)
+      const current = service.snapshot(agent.session) ?? snapshot
+      if (allRequiredVerified(current, agent.session.events)) break
+      if (budgetExhausted(derivedFor(agent.session).stepCount, snapshot.maxSteps)) break
+      const prompt: UserMessage = firstFollowup
+        ? createUserMessage({ content: [{ type: 'text', text: resume ? `Resume: continue from recorded state. ${config.task}` : config.task }], source: { kind: 'user' } })
+        : continueMessage(unverifiedNames(current, agent.session.events).text)
+      firstFollowup = false
+      agent.followup(prompt)
     }
 
     // Derive the final status and commit it durably BEFORE the final flush,
-    // so the committed snapshot always persists with the run.
+    // so the committed snapshot always persists with the run. There is exactly
+    // one status that means success: all required evidence at the current
+    // revision passed.
     const snapshot = service.snapshot(agent.session)
-    let final: typeof snapshot
-    if (snapshot !== undefined && snapshot.status === 'running') {
+    let finalState: TaskSnapshot | undefined
+    if (snapshot !== undefined && isTerminalStatus(snapshot.status)) {
+      finalState = snapshot
+    } else if (snapshot !== undefined) {
       const reason = summarize(agent.session.events, firstSeq).reason
-      const missing = missingArtifacts(artifacts, workspace, artifactVerify)
-      const textEndings = foldConsecutiveTextEndings(agent.session.events)
+      const verified = allRequiredVerified(snapshot, agent.session.events)
+      const exhausted = budgetExhausted(derivedFor(agent.session).stepCount, snapshot.maxSteps)
       const status = reason?.kind === 'error' ? 'error'
-        : missing.length === 0 || textEndings >= 2 ? 'done'
-          : derivedFor(agent.session).stepCount >= snapshot.maxSteps ? 'budget-exhausted'
+        : verified ? 'done'
+          : exhausted ? 'budget-exhausted'
             : 'error'
       service.append(agent.session, 'update', { ...snapshot, status })
-      final = { ...snapshot, status }
-    } else {
-      final = snapshot
+      finalState = { ...snapshot, status }
     }
-    await sessions.flush(agent.session)
-
-    const outcome = summarize(agent.session.events, firstSeq)
-    io.stdout.write(outcome.text + '\n')
-    if (outcome.reason?.kind === 'error') {
-      io.stderr.write(`dsh: ${outcome.reason.error.code}: ${outcome.reason.error.message}\n`)
-    }
-    if (final !== undefined && final.status === 'done') {
-      const missing = missingArtifacts(artifacts, workspace, artifactVerify)
-      if (missing.length > 0) io.stderr.write(`dsh: run concluded without confirmed artifacts: ${missing.join(', ')}\n`)
-    }
-
-    if (config.trajectoryPath !== undefined && final !== undefined) {
-      writeTrajectory(config.trajectoryPath, renderTrajectory(sessionId, final, agent.session.events))
-    }
-
-    const code = final === undefined ? 1
-      : final.status === 'done' ? 0
-        : final.status === 'budget-exhausted' ? 2
-          : final.status === 'stalled' ? 3
-            : 1
-    io.exit(code)
+    await conclude(ctx, config, io, agent, finalState, firstSeq)
   } finally {
     await handle.dispose()
   }
+}
+
+/**
+ * Flush, report, write the trajectory, and request the process exit for one
+ * final state. A final state that is not `done` reports the unverified
+ * required conditions loudly, never silently.
+ */
+async function conclude(
+  ctx: Context,
+  config: Config,
+  io: RunnerIo,
+  agent: { readonly session: Session },
+  final: TaskSnapshot | undefined,
+  firstSeq: number,
+): Promise<void> {
+  const sessions = ctx.get('sessions')
+  if (final === undefined) {
+    await sessions?.flush(agent.session)
+    io.exit(1)
+    return
+  }
+  const outcome = summarize(agent.session.events, firstSeq)
+  if (outcome.text !== '') io.stdout.write(`${outcome.text}\n`)
+  if (outcome.reason?.kind === 'error') {
+    io.stderr.write(`dsh: ${outcome.reason.error.code}: ${outcome.reason.error.message}\n`)
+  }
+  if (final.status !== 'done') {
+    const unverified = unverifiedNames(final, agent.session.events)
+    if (unverified.names.length > 0) {
+      io.stderr.write(`dsh: run concluded ${final.status} — unverified required condition(s): ${unverified.text}\n`)
+    }
+  }
+  if (config.trajectoryPath !== undefined) {
+    writeTrajectory(config.trajectoryPath, renderTrajectory(agent.session.id, final, agent.session.events))
+  }
+  await sessions?.flush(agent.session)
+  io.exit(finalExitCode(final.status))
 }

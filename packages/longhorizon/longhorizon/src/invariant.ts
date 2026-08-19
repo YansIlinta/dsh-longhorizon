@@ -3,7 +3,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { InvariantFailure, InvariantInstaller } from '@deepseek-ai/dsh-invariants'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
-import { applyTaskStateChange, decodeTaskStateChange, emptyTaskStateView } from './fold.ts'
+import { applyTaskStateChange, decodeTaskStateChange, decodeVerificationEvidence, emptyTaskStateView } from './fold.ts'
 import type { TaskStateView } from './types.ts'
 
 const PACKAGE_NAME = '@deepseek-ai/dsh-longhorizon'
@@ -37,6 +37,23 @@ function applyChecked(state: TaskStateView, event: SessionEvent, fail: Invariant
   try {
     if (event.type === 'longhorizon/state') {
       return applyTaskStateChange(cloneState(state), decodeTaskStateChange(event))
+    }
+    if (event.type === 'longhorizon/evidence') {
+      // Not part of the state fold lineage; validate the payload strictly and
+      // cross-check it against the current snapshot's requirements/revision.
+      const evidence = decodeVerificationEvidence(event)
+      const current = state.snapshot
+      if (current !== undefined) {
+        if (evidence.taskRevision > current.taskRevision) {
+          fail(`session event ${event.seq} carries evidence for future revision ${evidence.taskRevision} (current ${current.taskRevision})`)
+        }
+        // Legacy snapshots declare no requirements; only name-check when one exists.
+        if (current.requirements.length > 0
+          && !current.requirements.some(requirement => requirement.id === evidence.requirementId)) {
+          fail(`session event ${event.seq} carries evidence for unknown requirement "${evidence.requirementId}"`)
+        }
+      }
+      return state
     }
     return state
   } catch (error) {

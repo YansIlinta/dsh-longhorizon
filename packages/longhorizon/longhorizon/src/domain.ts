@@ -7,7 +7,7 @@
  */
 
 import type { SessionId } from '@deepseek-ai/dsh-session'
-import type { TaskSnapshot, TaskStateRef } from './types.ts'
+import type { TaskSnapshot, TaskStateRef, VerificationEvidence } from './types.ts'
 
 /** State-changing verbs recorded in the durable source change. */
 export type TaskOperation = 'create' | 'update' | 'clear'
@@ -35,6 +35,13 @@ export interface TaskStateClearChangeMeta {
 /** Durable change union carried by the domain's own session event. */
 export type TaskStateChangeMeta = TaskStateSnapshotChangeMeta | TaskStateClearChangeMeta
 
+/** One durable verification check committed by a `longhorizon/evidence` event. */
+export interface LongHorizonEvidenceChangeMeta {
+  readonly kind: 'longhorizon/evidence'
+  readonly version: 1
+  readonly evidence: VerificationEvidence
+}
+
 declare module '@deepseek-ai/dsh-session/types' {
   interface SessionEventMap {
     /**
@@ -42,6 +49,14 @@ declare module '@deepseek-ai/dsh-session/types' {
      * long-horizon run. The run identity is the owning session id.
      */
     'longhorizon/state': TaskStateChangeMeta
+    /**
+     * One host-side verification check for one requirement at one task
+     * revision. Appended only when the check outcome or content identity
+     * changed, so the stream stays O(transitions) while remaining a complete
+     * replay source for the requirement verification state.
+     * @param evidence - the verification evidence, bound to its requirementId and taskRevision.
+     */
+    'longhorizon/evidence': LongHorizonEvidenceChangeMeta
   }
 }
 

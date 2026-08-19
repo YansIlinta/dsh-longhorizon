@@ -496,6 +496,23 @@ Source: [`packages/llm/llm-retry/src/types.ts:11`](../packages/llm/llm-retry/src
 
 ### `longhorizon/*`
 
+<a id="longhorizonevidence--log-only"></a>
+
+#### `longhorizon/evidence` — log-only
+
+```ts persistence-catalog
+/**
+ * One host-side verification check for one requirement at one task
+ * revision. Appended only when the check outcome or content identity
+ * changed, so the stream stays O(transitions) while remaining a complete
+ * replay source for the requirement verification state.
+ * @param evidence - the verification evidence, bound to its requirementId and taskRevision.
+ */
+'longhorizon/evidence': LongHorizonEvidenceChangeMeta
+```
+
+Source: [`packages/longhorizon/longhorizon/src/domain.ts:59`](../packages/longhorizon/longhorizon/src/domain.ts)
+
 <a id="longhorizonstate--log-only"></a>
 
 #### `longhorizon/state` — log-only
@@ -508,7 +525,7 @@ Source: [`packages/llm/llm-retry/src/types.ts:11`](../packages/llm/llm-retry/src
 'longhorizon/state': TaskStateChangeMeta
 ```
 
-Source: [`packages/longhorizon/longhorizon/src/domain.ts:44`](../packages/longhorizon/longhorizon/src/domain.ts)
+Source: [`packages/longhorizon/longhorizon/src/domain.ts:51`](../packages/longhorizon/longhorizon/src/domain.ts)
 
 ### `permission/*`
 

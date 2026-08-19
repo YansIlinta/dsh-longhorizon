@@ -1,14 +1,15 @@
 /**
  * Keyless service tests: the `ctx.longhorizon` service appends revisioned
- * snapshot events to a real SessionStore session, and the fold views them.
+ * snapshot events and verification evidence to a real SessionStore session, and
+ * the fold views them.
  */
 
 import { afterEach, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import SessionStore from '@deepseek-ai/dsh-session'
 import { SessionId } from '@deepseek-ai/dsh-session'
-import LongHorizonService, { foldTaskState } from '../src/index.ts'
-import type { TaskSnapshot } from '../src/types.ts'
+import LongHorizonService, { foldEvidence, foldTaskState, latestEvidenceForRequirement } from '../src/index.ts'
+import type { TaskSnapshot, VerificationEvidence } from '../src/types.ts'
 
 const disposers: (() => Promise<void>)[] = []
 
@@ -24,8 +25,24 @@ async function boot(): Promise<{ ctx: Context; service: LongHorizonService }> {
   return { ctx, service: ctx.get('longhorizon') as LongHorizonService }
 }
 
-function snap(objective: string, status: TaskSnapshot['status'] = 'running'): TaskSnapshot {
-  return { taskId: 'session-x' as SessionId, objective, status, maxSteps: 40, replanCount: 0, updatedAt: 0 }
+function snap(objective: string, status: TaskSnapshot['status'] = 'running', taskRevision = 1): TaskSnapshot {
+  return {
+    taskId: 'session-x' as SessionId,
+    objective,
+    status,
+    maxSteps: 40,
+    replanCount: 0,
+    planRevisionCount: 0,
+    taskRevision,
+    replanRequired: false,
+    requirements: [{
+      id: 'artifact:REPORT.md',
+      description: 'Produce artifact REPORT.md',
+      required: true,
+      verifier: { type: 'artifact', path: 'REPORT.md' },
+    }],
+    updatedAt: 0,
+  }
 }
 
 describe('longhorizon service', () => {
@@ -35,6 +52,8 @@ describe('longhorizon service', () => {
     const created = service.append(session, 'create', snap('fix the pipeline'))
     expect(created.revision).toBe(1)
     expect(service.snapshot(session)?.objective).toBe('fix the pipeline')
+    expect(service.snapshot(session)?.taskRevision).toBe(1)
+    expect(service.snapshot(session)?.requirements[0]?.id).toBe('artifact:REPORT.md')
 
     service.append(session, 'update', { ...snap('fix the pipeline'), status: 'done' })
     const view = service.view(session)
@@ -43,6 +62,26 @@ describe('longhorizon service', () => {
 
     // The durable events replay-fold to the same view.
     expect(foldTaskState(session.events).snapshot?.status).toBe('done')
+  })
+
+  it('appends verification evidence and the replay fold reads it back', async () => {
+    const { ctx, service } = await boot()
+    const session = ctx.sessions.create(SessionId('session-x'), { meta: { cwd: '/tmp' } })
+    service.append(session, 'create', snap('fix the pipeline'))
+    const evidence: VerificationEvidence = {
+      requirementId: 'artifact:REPORT.md',
+      taskRevision: 1,
+      status: 'passed',
+      verifierType: 'artifact',
+      artifactPath: 'REPORT.md',
+      artifactHash: 'abc123',
+      checkedAt: '2026-01-01T00:00:00.000Z',
+    }
+    service.appendEvidence(session, evidence)
+    expect(foldEvidence(session.events).length).toBe(1)
+    expect(latestEvidenceForRequirement(session.events, 'artifact:REPORT.md', 1)?.artifactHash).toBe('abc123')
+    // Evidence does not disturb the state revision lineage.
+    expect(service.view(session).ref?.revision).toBe(1)
   })
 
   it('rejects an update without a snapshot and a create on an initialized stream', async () => {
