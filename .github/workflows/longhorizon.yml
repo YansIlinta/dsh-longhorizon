@@ -1,0 +1,98 @@
+name: longhorizon (standalone)
+
+# Focused CI + pack-verification for the standalone `@deepseek-ai/dsh-longhorizon`
+# package. The monorepo `Release (dsh)` workflow owns the actual npm publish;
+# this lane proves the package builds, tests, and packs on its own against GitHub.
+#
+# `npm pack --ignore-scripts --dry-run` (with a temporary, writable npm cache)
+# verifies the publish surface matches `exports`/`files` without uploading
+# anything.
+
+on:
+  pull_request:
+    paths:
+      - packages/longhorizon/**
+      - packages/compaction/compaction-basic/**
+      - packages/core/session/src/known-event-types.ts
+      - docs/persistence-catalog.md
+      - packages/bundle/headless/**
+      - tsconfig*.json
+      - pnpm-lock.yaml
+      - examples/longhorizon/**
+      - .github/workflows/longhorizon.yml
+  push:
+    branches: [master]
+    paths:
+      - packages/longhorizon/**
+      - packages/compaction/compaction-basic/**
+      - packages/core/session/src/known-event-types.ts
+      - docs/persistence-catalog.md
+      - packages/bundle/headless/**
+      - tsconfig*.json
+      - pnpm-lock.yaml
+      - examples/longhorizon/**
+      - .github/workflows/longhorizon.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PRIMARY_NODE_VERSION: '24'
+  DSH_TELEMETRY_DISABLED: '1'
+
+jobs:
+  build-test-pack:
+    name: Build · test · pack
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v4
+        with:
+          dest: ${{ runner.temp }}/setup-pnpm
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.PRIMARY_NODE_VERSION }}
+
+      - name: Configure pnpm store path
+        id: pnpm-store
+        run: |
+          store_root="$HOME/.local/share/pnpm/store"
+          echo "PNPM_CONFIG_STORE_DIR=$store_root" >> "$GITHUB_ENV"
+          store_path=$(PNPM_CONFIG_STORE_DIR="$store_root" pnpm store path --silent)
+          echo "path=$store_path" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache/restore@v4
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: ${{ runner.os }}-node-${{ env.PRIMARY_NODE_VERSION }}-pnpm-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-node-${{ env.PRIMARY_NODE_VERSION }}-pnpm-
+
+      - name: Install (immutable)
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck + build the package (tsc + tsdown)
+        run: |
+          pnpm exec tsc -b packages/longhorizon/longhorizon
+          pnpm exec tsdown --config packages/longhorizon/longhorizon/tsdown.config.ts
+
+      - name: Run longhorizon + dependency tests
+        run: pnpm vitest run packages/longhorizon packages/compaction/compaction-basic/tests/seed.spec.ts packages/compaction/compaction-basic/tests/eval
+
+      - name: Lint
+        run: pnpm exec oxlint packages/longhorizon
+
+      - name: Verify durable-event persistence catalog
+        run: pnpm run verify-persistence-catalog
+
+      - name: Verify publish surface (npm pack dry-run, no upload)
+        run: |
+          npm pack --dry-run --ignore-scripts --cache "$RUNNER_TEMP/npm-cache" \
+            --pack-destination "$RUNNER_TEMP" \
+            ./packages/longhorizon/longhorizon

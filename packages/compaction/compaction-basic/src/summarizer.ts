@@ -82,6 +82,12 @@ export interface SummarizationInput {
   readonly tools?: readonly ToolSchema[]
   /** The shadowed region, in surface order, that precedes the compaction instruction. */
   readonly messages: readonly Message[]
+  /**
+   * Durable task facts (`<task-state>` frame) injected directly before the
+   * compaction instruction so the summary re-derives them instead of losing
+   * them to the truncated window. Absent when no seed provider is registered.
+   */
+  readonly seedText?: string
 }
 
 /** Safe summary content plus the exact auxiliary call envelope recorded with it. */
@@ -145,6 +151,10 @@ export async function summarizeWithLlm(
   const assembler = new BlockAssembler()
   const messages: Message[] = [
     ...input.messages,
+    ...input.seedText === undefined ? [] : [createUserMessage({
+      content: [{ type: 'text', text: [`<task-state>\n${input.seedText}\n</task-state>`].join('') }],
+      source: { kind: 'plugin', plugin: 'dsh-compaction-basic' },
+    })],
     createUserMessage({
       content: [{ type: 'text', text: COMPACTION_INSTRUCTION }],
       source: { kind: 'plugin', plugin: 'dsh-compaction-basic' },

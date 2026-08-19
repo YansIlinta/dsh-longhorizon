@@ -1,0 +1,6 @@
+.dsh-home/
+*.log
+*-trajectory.md
+probe.md
+*.tmp
+probe*.md

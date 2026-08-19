@@ -428,4 +428,6 @@ export class BasicCompactionEngine extends CompactionEngine {
   }
 }
 
+export { registerSummarySeed, summarySeedFor } from './seed.ts'
+export type { SummarySeedProvider } from './seed.ts'
 export default BasicCompactionEngine

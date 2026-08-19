@@ -5,7 +5,7 @@
  * @module @deepseek-ai/dsh-headless/startup
  */
 
-import { Command } from 'commander'
+import { Command, InvalidArgumentError } from 'commander'
 import type { Context } from '@deepseek-ai/cordis'
 import { parseCmdline } from '@deepseek-ai/dsh-cmdline'
 
@@ -22,6 +22,26 @@ export const HEADLESS_STARTUP_SERVICE = 'headlessStartup'
 export interface HeadlessStartupValues {
   /** The task text this invocation asked for. */
   task: string
+  /** Resume the persisted run with this session id instead of creating a fresh session. */
+  resumeSessionId?: string
+  /** Hard cap on agent steps for this run; overrides any config value. */
+  maxSteps?: number
+  /** Write the run's readable trajectory markdown to this path. */
+  trajectoryPath?: string
+}
+
+/**
+ * Validate the `--max-steps` value: a positive integer or a fail-loud parse
+ * error that terminates the process.
+ * @param value - the raw option value.
+ * @returns the validated step cap.
+ */
+function parseMaxSteps(value: string): number {
+  const parsed = Number(value)
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new InvalidArgumentError(`--max-steps expects a positive integer, got ${JSON.stringify(value)}`)
+  }
+  return parsed
 }
 
 /**
@@ -34,9 +54,14 @@ function headlessCommand(): Command {
     .description('Answer one task, print the final assistant message, and exit.')
     .helpOption('-h, --help', 'show this help')
     .argument('[task...]', 'the task text; multiple words are joined by spaces')
+    .option('--resume <sessionId>', 'resume the persisted run with this session id instead of creating a fresh session')
+    .option('--max-steps <n>', 'hard cap on the number of agent steps for this run', parseMaxSteps)
+    .option('--trajectory <path>', 'write the run as readable markdown to this path')
     .addHelpText('after', `
 Examples:
   dsh --profile headless "run the tests"     answer one task and exit
+  dsh --profile headless --resume session-abc --max-steps 40 "finish the leftover work"
+  dsh --profile headless --trajectory out.md "<task text>"
 `)
 }
 
@@ -51,7 +76,12 @@ export function apply(ctx: Context): void {
   program.action(() => {
     const task = program.args.join(' ')
     if (task.trim() === '') program.error('error: a task is required, for example: dsh --profile headless "run the tests"')
-    ctx.provide(HEADLESS_STARTUP_SERVICE, { task } satisfies HeadlessStartupValues)
+    const opts = program.opts() as { resume?: string; maxSteps?: number; trajectory?: string }
+    const values: HeadlessStartupValues = { task }
+    if (opts.resume !== undefined) values.resumeSessionId = opts.resume
+    if (opts.maxSteps !== undefined) values.maxSteps = opts.maxSteps
+    if (opts.trajectory !== undefined) values.trajectoryPath = opts.trajectory
+    ctx.provide(HEADLESS_STARTUP_SERVICE, values)
   })
   parseCmdline(ctx, program)
 }

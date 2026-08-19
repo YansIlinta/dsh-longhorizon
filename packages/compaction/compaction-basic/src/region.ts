@@ -23,6 +23,7 @@ import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { frameSummary } from './summarizer.ts'
 import type { SummarizationInput, SummaryResult } from './summarizer.ts'
+import { summarySeedFor } from './seed.ts'
 
 interface RegionDependencies {
   readonly meter: TokenMeter
@@ -506,10 +507,12 @@ function buildSummarizationInput(
     // oxlint-disable-next-line typescript/no-non-null-assertion
     .map(seq => session.deriveEventMessage(events[seq]!))
     .filter((message): message is Message => message !== null)
+  const seedText = summarySeedFor(session)
   return {
     ...header?.system === undefined ? {} : { system: header.system },
     ...header?.tools === undefined ? {} : { tools: header.tools },
     messages: regionMessages,
+    ...seedText === undefined ? {} : { seedText },
   }
 }
 

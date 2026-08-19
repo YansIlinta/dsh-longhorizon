@@ -1,0 +1,1 @@
+Find every file under data/ whose filename contains "basic", and report how many rows each one has (one line per file).

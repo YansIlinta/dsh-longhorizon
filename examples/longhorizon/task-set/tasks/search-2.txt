@@ -1,0 +1,1 @@
+Search the workspace for the string "TODO" (case-insensitive) and report every match as file:line with the matched text.

@@ -1,0 +1,4 @@
+.run/
+.sessions/
+pipeline.out
+REPORT.md

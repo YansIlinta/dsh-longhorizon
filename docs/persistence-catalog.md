@@ -494,6 +494,22 @@ Source: [`packages/llm/llm-retry/src/types.ts:9`](../packages/llm/llm-retry/src/
 
 Source: [`packages/llm/llm-retry/src/types.ts:11`](../packages/llm/llm-retry/src/types.ts)
 
+### `longhorizon/*`
+
+<a id="longhorizonstate--log-only"></a>
+
+#### `longhorizon/state` — log-only
+
+```ts persistence-catalog
+/**
+ * Complete post-mutation task snapshot or clear tombstone for one
+ * long-horizon run. The run identity is the owning session id.
+ */
+'longhorizon/state': TaskStateChangeMeta
+```
+
+Source: [`packages/longhorizon/longhorizon/src/domain.ts:44`](../packages/longhorizon/longhorizon/src/domain.ts)
+
 ### `permission/*`
 
 <a id="permissionpreset--log-only"></a>

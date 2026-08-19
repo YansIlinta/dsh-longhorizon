@@ -1,0 +1,19 @@
+{
+  "description": "Synthetic LongMemEval-style subset (reduced, clearly labeled analog of the public benchmark). Each document carries labeled key facts; the eval asserts whether the compaction path preserves them.",
+  "documents": [
+    { "id": "doc-01", "text": "The pipeline reads data/*. FACT-01 every input file must be processed. FACT-02 the empty file must not crash the run." },
+    { "id": "doc-02", "text": "FACT-03 the value column may be missing on some CSV rows. FACT-04 aggregation must skip missing values." },
+    { "id": "doc-03", "text": "FACT-05 one JSON file contains an invalid utf-8 byte. FACT-06 decode must be lossy-tolerant." },
+    { "id": "doc-04", "text": "FACT-07 the summary count must equal the processed file count. FACT-08 the write tool persists facts for later steps." }
+  ],
+  "questions": [
+    { "id": "q-01", "ask": "How many files must be processed?", "answer": "FACT-01" },
+    { "id": "q-02", "ask": "What must not crash?", "answer": "FACT-02" },
+    { "id": "q-03", "ask": "Which column may be missing?", "answer": "FACT-03" },
+    { "id": "q-04", "ask": "How are missing values handled?", "answer": "FACT-04" },
+    { "id": "q-05", "ask": "Which file has a bad byte?", "answer": "FACT-05" },
+    { "id": "q-06", "ask": "How is decoding handled?", "answer": "FACT-06" },
+    { "id": "q-07", "ask": "What must equal the processed count?", "answer": "FACT-07" },
+    { "id": "q-08", "ask": "Which tool persists facts for later steps?", "answer": "FACT-08" }
+  ]
+}

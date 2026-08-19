@@ -1,0 +1,1 @@
+Use the web_search tool to find the current price of the DeepSeek deepseek-chat API model per 1M input tokens (official pricing page or a reputable source), then report the number you find and cite the source.

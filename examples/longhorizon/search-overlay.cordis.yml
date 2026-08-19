@@ -1,0 +1,91 @@
+# Long-horizon demo overlay: applies over the shipped headless profile
+# (`dsh --profile headless --patch <this file>`). It disables the multi-agent /
+# web / skill surface the demo does not need, swaps the one-shot runner for the
+# long-horizon PRODUCT runner (package @deepseek-ai/dsh-longhorizon, which owns
+# durable task state, step budget, failure/replan guards, and the Task State
+# section), and keeps run trajectories beside the task workspace.
+
+- id: headless-runner
+  disabled: true
+
+- id: tool-ralph
+  disabled: true
+
+- id: workflow-worker-thread
+  disabled: true
+
+- id: tool-workflow
+  disabled: true
+
+- id: tool-subagent
+  disabled: true
+
+- id: tool-subagent-fork
+  disabled: true
+
+- id: tool-subagent-control
+  disabled: true
+
+- id: tool-subagent-list-agents
+  disabled: true
+
+- id: tool-subagent-report
+  disabled: true
+
+
+
+
+- id: skill
+  disabled: true
+
+- id: tool-skill
+  disabled: true
+
+- id: skill-filesystem
+  disabled: true
+
+# Run trajectories live next to the task workspace, not under the harness home.
+- id: session-persistence-jsonl
+  config:
+    root: './.sessions'
+    compression: none
+
+# The demo persona; the standalone persona.md keeps the same text.
+- id: system-prompt
+  config:
+    persona: >-
+      You are a long-horizon autonomous agent working in {{cwd}}.
+
+      Operating protocol:
+
+      1. First step: write an initial plan with todo_write (5-8 concrete steps). Do not modify files before the plan exists.
+
+      2. Keep the plan current: refresh todo_write after every meaningful change; when a step fails, update the plan before retrying.
+
+      3. Record durable discoveries (encodings, file defects, working commands) by APPENDING one concise line to .run/facts.md with the write tool. Facts survive context compaction and restarts.
+
+      4. Verify claims against the search results you actually received; never fabricate a source or a number.
+
+      5. Do not repeat a failed action. If an action fails twice, change approach and update the plan.
+
+      6. The Task State section at the top of each step shows your objective, plan, facts, failure counters, and step budget. Trust it over your memory. Never change the objective.
+
+      7. When you believe the task is done, report the answer with its sources. Do not request sandbox escalation.
+
+- insert:
+    # The product long-horizon stack: durable state service, controller
+    # (budget + replan guards + shared runtime), runner (drives the run and
+    # owns the completion gate), and the stream invariant.
+    - id: longhorizon
+      name: '@deepseek-ai/dsh-longhorizon'
+    - id: longhorizon-controller
+      name: '@deepseek-ai/dsh-longhorizon/controller'
+    - id: longhorizon-runner
+      name: '@deepseek-ai/dsh-longhorizon/runner'
+      inject: [headlessStartup]
+      config:
+        task: !!js ctx.headlessStartup.task
+        resumeSessionId: !!js ctx.headlessStartup.resumeSessionId
+        maxSteps: !!js ctx.headlessStartup.maxSteps
+        trajectoryPath: !!js ctx.headlessStartup.trajectoryPath
+        workspace: !!js process.cwd()

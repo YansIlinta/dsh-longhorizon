@@ -53,6 +53,9 @@ export const apply = ctx => globalThis.__headlessStartupApply(ctx)
     `  inject: [${HEADLESS_STARTUP_SERVICE}]`,
     '  config:',
     '    task: !!js ctx.headlessStartup.task',
+    '    resumeSessionId: !!js ctx.headlessStartup.resumeSessionId',
+    '    maxSteps: !!js ctx.headlessStartup.maxSteps',
+    '    trajectoryPath: !!js ctx.headlessStartup.trajectoryPath',
     '- id: headless-startup',
     `  name: ${pathToFileURL(join(dir, 'startup.mjs')).href}`,
     '',
@@ -86,6 +89,26 @@ describe('headless command-line provider', () => {
     expect(task).toEqual({ task: 'run the tests' })
     expect(observed.runnerConfig).toEqual({ task: 'run the tests' })
     expect(observed.exits).toEqual([])
+  })
+
+  it('publishes the resume, max-steps, and trajectory flags alongside the task', async () => {
+    const { task, observed } = await bootStartup(['--resume', 'session-abc', '--max-steps', '25', '--trajectory', 'out.md', 'finish', 'the', 'job'])
+    expect(task).toEqual({ task: 'finish the job', resumeSessionId: 'session-abc', maxSteps: 25, trajectoryPath: 'out.md' })
+    expect(observed.runnerConfig).toEqual({ task: 'finish the job', resumeSessionId: 'session-abc', maxSteps: 25, trajectoryPath: 'out.md' })
+    expect(observed.exits).toEqual([])
+  })
+
+  it('leaves the optional values absent when no flag is passed', async () => {
+    const { task } = await bootStartup(['plain', 'task'])
+    expect(task).toEqual({ task: 'plain task' })
+  })
+
+  it.each([{ value: '0' }, { value: '-3' }, { value: 'many' }, { value: '1.5' }])('rejects a non-positive-integer --max-steps ($value)', async ({ value }) => {
+    const { task, observed } = await bootStartup(['--max-steps', value, 'task'])
+    expect(observed.out).toContain('--max-steps expects a positive integer')
+    expect(task).toBeUndefined()
+    expect(observed.runnerConfig).toBeUndefined()
+    expect(observed.exits).toEqual([1])
   })
 
   it.each([{ args: [] }, { args: ['   '] }])('rejects an invocation with no non-whitespace task ($args)', async ({ args }) => {
