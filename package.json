@@ -1,0 +1,67 @@
+{
+  "name": "@deepseek-ai/dsh-longhorizon",
+  "description": "Long-horizon agent state domain and controller for the DeepSeek Harness: durable task state, step budget, failure/replan guards, and a model-visible Task State section",
+  "version": "0.1.0-rc.5",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/YansIlinta/dsh-longhorizon.git"
+  },
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./controller": {
+      "types": "./lib/types/controller.d.ts",
+      "default": "./lib/controller.js"
+    },
+    "./runner": {
+      "types": "./lib/types/runner.d.ts",
+      "default": "./lib/runner.js"
+    },
+    "./invariant": {
+      "types": "./lib/types/invariant.d.ts",
+      "default": "./lib/invariant.js"
+    },
+    "./types": {
+      "types": "./lib/types/types.d.ts",
+      "default": "./lib/types/types.js"
+    },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/*.js",
+    "lib/types/**/*.js",
+    "lib/types/**/*.d.ts"
+  ],
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-agent": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-llm": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-session": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-tools": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-invariants": "^0.1.0-rc.6"
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "^3.18.1",
+    "@deepseek-ai/dsh-compaction-basic": "^0.1.0-rc.6"
+  },
+  "devDependencies": {
+    "typescript": "~5.9.0",
+    "vitest": "^4",
+    "@types/node": "^22.0.0",
+    "@deepseek-ai/dsh-agent-default-model": "0.1.0-rc.6",
+    "@deepseek-ai/cordis-plugin-loader": "^1.0.2",
+    "@deepseek-ai/dsh-cmdline": "0.1.0-rc.6"
+  },
+  "scripts": {
+    "build": "tsc -b && tsdown",
+    "test": "vitest run"
+  },
+  "private": false
+}
