@@ -24,7 +24,6 @@ import type {} from '@deepseek-ai/dsh-cmdline'
 import {
   continueMessage,
   derivedFor,
-  foldConsecutiveTextEndings,
   installTaskStateSection,
   lastTurnEnd,
   renderTrajectory,
@@ -201,7 +200,9 @@ async function run(ctx: Context, config: Config, io: RunnerIo): Promise<void> {
       source: { kind: 'user' },
     }))
 
-    // Drive to a verifiable conclusion: loop while the completion gate wants more work.
+    // Drive to a verifiable conclusion: plain-text claims of completion do not
+    // satisfy the gate. If artifacts remain unconfirmed, keep driving until
+    // verification succeeds, the run errors/stalls, or the step budget is hit.
     for (;;) {
       await agent.whenIdle()
       const snapshot = service.snapshot(agent.session)
@@ -211,23 +212,22 @@ async function run(ctx: Context, config: Config, io: RunnerIo): Promise<void> {
       if (lastEnd !== undefined && lastEnd.reason.kind === 'error') break
       const missing = missingArtifacts(artifacts, workspace, artifactVerify)
       const stepCount = derivedFor(agent.session).stepCount
-      const textEndings = foldConsecutiveTextEndings(agent.session.events)
-      if (missing.length === 0 || textEndings >= 2 || stepCount >= snapshot.maxSteps) break
+      if (missing.length === 0 || stepCount >= snapshot.maxSteps) break
       if (lastEnd === undefined || !turnEndedWithText(agent.session.events, lastEnd.turn)) break
-      io.stderr.write(`dsh: completion gate — unconfirmed artifacts, continuing (text endings ${textEndings})\n`)
+      io.stderr.write('dsh: completion gate — unconfirmed artifacts, continuing\n')
       agent.followup(continueMessage(missing))
     }
 
     // Derive the final status and commit it durably BEFORE the final flush,
-    // so the committed snapshot always persists with the run.
+    // so the committed snapshot always persists with the run. `done` is only
+    // reachable when the declared artifact verification gate passes.
     const snapshot = service.snapshot(agent.session)
     let final: typeof snapshot
     if (snapshot !== undefined && snapshot.status === 'running') {
       const reason = summarize(agent.session.events, firstSeq).reason
       const missing = missingArtifacts(artifacts, workspace, artifactVerify)
-      const textEndings = foldConsecutiveTextEndings(agent.session.events)
       const status = reason?.kind === 'error' ? 'error'
-        : missing.length === 0 || textEndings >= 2 ? 'done'
+        : missing.length === 0 ? 'done'
           : derivedFor(agent.session).stepCount >= snapshot.maxSteps ? 'budget-exhausted'
             : 'error'
       service.append(agent.session, 'update', { ...snapshot, status })
