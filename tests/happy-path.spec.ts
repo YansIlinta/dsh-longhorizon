@@ -185,4 +185,40 @@ describe('longhorizon product happy path (scripted model)', () => {
 
     rmSync(dir, { recursive: true, force: true })
   })
+
+  it('never treats repeated text-only completion claims as success while an artifact is missing', { timeout: 30_000 }, async () => {
+    let turn = 0
+    const booted = await boot({
+      afterPrompt: (session, _workspace, message) => {
+        turn += 1
+        appendTextTurn(session, turn, message, 'Done')
+      },
+    })
+
+    const { ctx, dir, exit } = booted
+    await ctx.plugin(Runner, {
+      task: 'Produce REPORT.md',
+      workspace: dir,
+      maxSteps: 3,
+      artifacts: ['REPORT.md'],
+    })
+
+    const deadline = Date.now() + 20_000
+    while (exit.code === undefined && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 50))
+    }
+
+    const { stdout, stderr } = booted.getResult()
+    expect(exit.code, `stdout=${JSON.stringify(stdout)} stderr=${JSON.stringify(stderr)}`).toBe(2)
+    expect(stderr).toContain('completion gate — unconfirmed artifacts')
+
+    const sessionId = /run session: (session-[^\s]+)/.exec(stdout)?.[1]
+    expect(sessionId).toBeTruthy()
+    const view = foldTaskState(readPersistedEvents(join(dir, '.sessions'), sessionId as string))
+    expect(view.snapshot?.status).toBe('budget-exhausted')
+    expect(view.snapshot?.status).not.toBe('done')
+    expect(view.ref?.revision).toBe(2)
+
+    rmSync(dir, { recursive: true, force: true })
+  })
 })
