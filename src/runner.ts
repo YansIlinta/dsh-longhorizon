@@ -176,7 +176,7 @@ async function run(ctx: Context, config: Config, io: RunnerIo): Promise<void> {
   const workspace = config.workspace ?? process.cwd()
   const factsPath = join(workspace, config.factsFile ?? '.run/facts.md')
   const maxSteps = config.maxSteps ?? 100
-  const artifacts = config.artifacts ?? ['REPORT.md']
+  const artifacts = config.artifacts !== undefined && config.artifacts.length > 0 ? config.artifacts : ['REPORT.md']
   const artifactVerify = config.artifactVerify
 
   const sessionId = config.resumeSessionId === undefined ? SessionId(`session-${randomUUID()}`) : SessionId(config.resumeSessionId)
