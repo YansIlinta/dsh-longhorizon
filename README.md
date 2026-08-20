@@ -2,32 +2,35 @@
 
 Long-horizon agent state domain and controller for the DeepSeek Harness: durable
 task state (`longhorizon/state` session events), step budget, failure/replan
-guards, and a model-visible Task State section.
+guards, a model-visible Task State section, and a one-shot runner with a
+host-side completion gate.
 
 This is the standalone snapshot of `packages/longhorizon/longhorizon` from the
 `deepseek-ai/DeepSeek-Harness` monorepo, extracted for independent packaging.
+It is a Harness plugin package, not a standalone CLI; a Harness/dsh launcher
+must mount the package rows shown below.
 
-## Status: keyless-tested in-repo; needs one upstream release
+## Status: v0 product-closure work
 
-- **Build:** `tsc -b && tsdown` compiles fully EXCEPT one import:
-  `registerSummarySeed` from `@deepseek-ai/dsh-compaction-basic`.
-  That API exists in the monorepo's `compaction-basic` but is **not yet
-  published** (`npm @deepseek-ai/dsh-compaction-basic@0.1.0-rc.7` lacks it).
-  Until it ships, the standalone build cannot pass typecheck and the compaction
-  survival feature is inert outside the monorepo.
-- **Tests:** the full suites (fold, service, scripted happy-path, keyless boot
-  smoke) are green **inside the monorepo** where the matching sources resolve.
-- The publishable tarball (`deepseek-ai-dsh-longhorizon-0.1.0-rc.5.tgz`,
-  `npm pack`) is produced from the monorepo build and packs cleanly (27 files).
+- **Completion correctness:** a run can reach `done` only when its declared
+  artifacts exist and, when configured, the host-side `artifactVerify` command
+  exits 0. Repeated model text claiming completion does not satisfy the gate.
+- **Compaction compatibility:** `registerSummarySeed` is treated as an optional
+  enhancement. Published `@deepseek-ai/dsh-compaction-basic` versions that do
+  not expose that hook no longer cause a named-export typecheck failure; Task
+  State still re-renders from durable session state, while summary seeding is
+  simply unavailable on those versions.
+- **Tests in this snapshot:** fold/service tests, a scripted create → artifact →
+  done integration path, a scripted false-completion regression, and a keyless
+  boot/failure smoke test.
+- **Environment verification still required:** a fresh install/build/test must
+  be run against a mutually compatible set of published DeepSeek Harness
+  package versions. This repository does not vendor those dependencies or ship
+  its own launcher.
 
-## Pending dependency (real, not mocked)
+## Build / test
 
-- Publish `@deepseek-ai/dsh-compaction-basic` with
-  `registerSummarySeed` / `summarySeedFor` (in-repo `src/seed.ts`).
-  After that lands, `pnpm install && pnpm run build` here should pass and the
-  package is independently publishable.
-
-## Build / test (once the dependency lands)
+With a compatible DeepSeek Harness dependency set installed:
 
 ```sh
 pnpm install
@@ -37,7 +40,7 @@ pnpm test        # vitest run
 
 ## Consume
 
-Mount the rows by package name:
+Mount the rows by package name from a Harness/dsh composition:
 
 ```yaml
 - id: longhorizon
@@ -51,6 +54,10 @@ Mount the rows by package name:
     maxSteps: 100
     artifacts: [REPORT.md]
 ```
+
+The runner also accepts `resumeSessionId`, `workspace`, `trajectoryPath`,
+`artifactVerify`, and `factsFile` through its plugin config. The concrete CLI
+flags/profile mapping live in the external Harness launcher, not in this repo.
 
 ## License
 
