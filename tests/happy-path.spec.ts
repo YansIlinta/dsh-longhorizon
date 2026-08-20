@@ -221,4 +221,69 @@ describe('longhorizon product happy path (scripted model)', () => {
 
     rmSync(dir, { recursive: true, force: true })
   })
+
+  it('does not accept an empty file as a completed artifact', { timeout: 30_000 }, async () => {
+    let turn = 0
+    const booted = await boot({
+      afterPrompt: (session, workspace, message) => {
+        turn += 1
+        writeFileSync(join(workspace, 'REPORT.md'), '', 'utf8')
+        appendTextTurn(session, turn, message, 'REPORT.md exists')
+      },
+    })
+
+    const { ctx, dir, exit } = booted
+    await ctx.plugin(Runner, {
+      task: 'Produce a non-empty REPORT.md',
+      workspace: dir,
+      maxSteps: 2,
+      artifacts: ['REPORT.md'],
+    })
+
+    const deadline = Date.now() + 20_000
+    while (exit.code === undefined && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 50))
+    }
+
+    const { stdout } = booted.getResult()
+    expect(exit.code).toBe(2)
+    const sessionId = /run session: (session-[^\s]+)/.exec(stdout)?.[1]
+    expect(sessionId).toBeTruthy()
+    expect(foldTaskState(readPersistedEvents(join(dir, '.sessions'), sessionId as string)).snapshot?.status).toBe('budget-exhausted')
+
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('blocks completion when the host-side verifier exits non-zero', { timeout: 30_000 }, async () => {
+    let turn = 0
+    const booted = await boot({
+      afterPrompt: (session, workspace, message) => {
+        turn += 1
+        writeFileSync(join(workspace, 'REPORT.md'), '# candidate\n', 'utf8')
+        appendTextTurn(session, turn, message, 'REPORT.md written')
+      },
+    })
+
+    const { ctx, dir, exit } = booted
+    await ctx.plugin(Runner, {
+      task: 'Produce and verify REPORT.md',
+      workspace: dir,
+      maxSteps: 2,
+      artifacts: ['REPORT.md'],
+      artifactVerify: [process.execPath, '-e', 'process.exit(7)'],
+    })
+
+    const deadline = Date.now() + 20_000
+    while (exit.code === undefined && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 50))
+    }
+
+    const { stdout } = booted.getResult()
+    expect(exit.code).toBe(2)
+    const sessionId = /run session: (session-[^\s]+)/.exec(stdout)?.[1]
+    expect(sessionId).toBeTruthy()
+    expect(foldTaskState(readPersistedEvents(join(dir, '.sessions'), sessionId as string)).snapshot?.status).toBe('budget-exhausted')
+
+    rmSync(dir, { recursive: true, force: true })
+  })
 })
