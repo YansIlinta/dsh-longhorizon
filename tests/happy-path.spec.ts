@@ -286,4 +286,35 @@ describe('longhorizon product happy path (scripted model)', () => {
 
     rmSync(dir, { recursive: true, force: true })
   })
+
+  it('does not let an explicit empty artifacts array disable the completion gate', { timeout: 30_000 }, async () => {
+    let turn = 0
+    const booted = await boot({
+      afterPrompt: (session, _workspace, message) => {
+        turn += 1
+        appendTextTurn(session, turn, message, 'Done')
+      },
+    })
+
+    const { ctx, dir, exit } = booted
+    await ctx.plugin(Runner, {
+      task: 'Produce the default REPORT.md',
+      workspace: dir,
+      maxSteps: 2,
+      artifacts: [],
+    })
+
+    const deadline = Date.now() + 20_000
+    while (exit.code === undefined && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 50))
+    }
+
+    const { stdout } = booted.getResult()
+    expect(exit.code).toBe(2)
+    const sessionId = /run session: (session-[^\s]+)/.exec(stdout)?.[1]
+    expect(sessionId).toBeTruthy()
+    expect(foldTaskState(readPersistedEvents(join(dir, '.sessions'), sessionId as string)).snapshot?.status).toBe('budget-exhausted')
+
+    rmSync(dir, { recursive: true, force: true })
+  })
 })
