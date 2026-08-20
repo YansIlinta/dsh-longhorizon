@@ -7,7 +7,7 @@
  */
 
 import { spawnSync } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { statSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
@@ -36,6 +36,9 @@ export const name = 'longhorizon-runner'
 
 /** Services required before the one-shot run can start. */
 export const inject = ['agentDefaultModel', 'agents', 'longhorizon', 'sessions', 'systemPrompt']
+
+/** Host-side verification commands must not be able to hang the run forever. */
+const ARTIFACT_VERIFY_TIMEOUT_MS = 30_000
 
 /** Plugin config: the task plus the run tunables. */
 export interface Config {
@@ -114,21 +117,35 @@ function fail(io: RunnerIo, error: unknown): void {
   io.exit(1)
 }
 
-/** Run the host-side artifact verification command; true when it exits 0. */
+/** Run the host-side artifact verification command; true only on a bounded exit 0. */
 function verifyArtifacts(argv: readonly string[], workspace: string): boolean {
   const command = argv[0]
   if (command === undefined) return false
-  const result = spawnSync(command, argv.slice(1), { cwd: workspace, encoding: 'utf8' })
+  const result = spawnSync(command, argv.slice(1), {
+    cwd: workspace,
+    encoding: 'utf8',
+    timeout: ARTIFACT_VERIFY_TIMEOUT_MS,
+  })
   return result.status === 0
 }
 
+/** A declared artifact is confirmed only when it is a non-empty regular file. */
+function artifactConfirmed(artifact: string, workspace: string): boolean {
+  try {
+    const stat = statSync(join(workspace, artifact))
+    return stat.isFile() && stat.size > 0
+  } catch {
+    return false
+  }
+}
+
 /**
- * The artifacts the run cannot yet confirm: missing files, or — when
- * `artifactVerify` is configured — files that fail the host-side check.
+ * The artifacts the run cannot yet confirm: absent/empty/non-file paths, or —
+ * when `artifactVerify` is configured — files that fail the bounded host check.
  */
 function missingArtifacts(artifacts: readonly string[], workspace: string, verify: readonly string[] | undefined): string[] {
   if (artifacts.length === 0) return []
-  const missingFiles = artifacts.filter(artifact => !existsSync(join(workspace, artifact)))
+  const missingFiles = artifacts.filter(artifact => !artifactConfirmed(artifact, workspace))
   if (missingFiles.length > 0) return missingFiles
   if (verify === undefined || verify.length === 0) return []
   return verifyArtifacts(verify, workspace) ? [] : [...artifacts]
