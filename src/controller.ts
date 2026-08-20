@@ -10,7 +10,7 @@ import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type { Session } from '@deepseek-ai/dsh-session'
-import { registerSummarySeed } from '@deepseek-ai/dsh-compaction-basic'
+import * as CompactionBasic from '@deepseek-ai/dsh-compaction-basic'
 import { foldTaskState } from './fold.ts'
 import {
   budgetExhausted,
@@ -49,6 +49,17 @@ export const Config: z<Config> = z.object({
   replanLimit: z.number().step(1).min(1).required(false),
 })
 
+type SummarySeedRegistrar = (provider: (session: Session) => string | undefined) => () => void
+
+/**
+ * Published compaction-basic releases may not expose the summary-seed hook yet.
+ * Treat it as an optional compatibility enhancement instead of making the
+ * entire standalone package fail to typecheck/build on an absent named export.
+ */
+const registerSummarySeed = (CompactionBasic as unknown as {
+  registerSummarySeed?: SummarySeedRegistrar
+}).registerSummarySeed
+
 /**
  * Install the loop guards: the step budget rejects the next step once the
  * snapshot's cap is reached; per-tool consecutive failures inject a replan
@@ -59,14 +70,16 @@ export const Config: z<Config> = z.object({
  */
 export function apply(ctx: Context, config: Config): void {
   const service = ctx.longhorizon
-  // Durable task facts must survive compaction: seed the compaction summary
-  // with the run's objective/status so the summary re-derives them instead of
-  // losing them to the truncated window.
-  ctx.effect(() => registerSummarySeed((session: Session) => {
-    const snapshot = foldTaskState(session.events).snapshot
-    if (snapshot === undefined) return undefined
-    return `Objective: ${snapshot.objective}\nStatus: ${snapshot.status}\nStep budget: ${snapshot.maxSteps}`
-  }), 'longhorizon:summary-seed')
+  // Durable task facts should survive compaction when the host exposes the
+  // summary-seed hook. Older published compaction-basic versions omit it;
+  // longhorizon still runs because Task State is re-rendered from durable state.
+  if (registerSummarySeed !== undefined) {
+    ctx.effect(() => registerSummarySeed((session: Session) => {
+      const snapshot = foldTaskState(session.events).snapshot
+      if (snapshot === undefined) return undefined
+      return `Objective: ${snapshot.objective}\nStatus: ${snapshot.status}\nStep budget: ${snapshot.maxSteps}`
+    }), 'longhorizon:summary-seed')
+  }
   const workspace = config.workspace ?? process.cwd()
   const factsPath = join(workspace, config.factsFile ?? '.run/facts.md')
   const failureLimit = config.failureLimit ?? 3
