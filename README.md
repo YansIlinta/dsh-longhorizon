@@ -12,17 +12,19 @@ must mount the package rows shown below.
 
 ## Status: v0 product-closure work
 
-- **Completion correctness:** a run can reach `done` only when its declared
-  artifacts exist and, when configured, the host-side `artifactVerify` command
-  exits 0. Repeated model text claiming completion does not satisfy the gate.
+- **Completion correctness:** a run can reach `done` only when every declared
+  artifact is a non-empty regular file and, when configured, the bounded
+  host-side `artifactVerify` command exits 0. Repeated model text claiming
+  completion, empty files, directories, and failed/timed-out verification do
+  not satisfy the gate.
 - **Compaction compatibility:** `registerSummarySeed` is treated as an optional
   enhancement. Published `@deepseek-ai/dsh-compaction-basic` versions that do
   not expose that hook no longer cause a named-export typecheck failure; Task
   State still re-renders from durable session state, while summary seeding is
   simply unavailable on those versions.
 - **Tests in this snapshot:** fold/service tests, a scripted create → artifact →
-  done integration path, a scripted false-completion regression, and a keyless
-  boot/failure smoke test.
+  done integration path, false-completion/empty-artifact/verifier-failure
+  regressions, and a keyless boot/failure smoke test.
 - **Environment verification still required:** a fresh install/build/test must
   be run against a mutually compatible set of published DeepSeek Harness
   package versions. This repository does not vendor those dependencies or ship
