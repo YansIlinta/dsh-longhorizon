@@ -2,3 +2,16 @@ node_modules/
 lib/
 *.tgz
 /coverage/
+
+# run-time artifacts (runner outputs, sessions, logs)
+.run/
+.sessions/
+.dsh-home/
+REPORT.md
+pipeline.out
+*.log
+
+# editor / OS
+.DS_Store
+.idea/
+.vscode/
