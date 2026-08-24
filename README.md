@@ -25,10 +25,14 @@ must mount the package rows shown below.
 - **Tests in this snapshot:** fold/service tests, a scripted create → artifact →
   done integration path, false-completion/empty-artifact/verifier-failure
   regressions, and a keyless boot/failure smoke test.
-- **Environment verification still required:** a fresh install/build/test must
-  be run against a mutually compatible set of published DeepSeek Harness
-  package versions. This repository does not vendor those dependencies or ship
-  its own launcher.
+- **Standalone verification (2026-08-21):** a fresh `pnpm install` against a
+  published DeepSeek Harness dependency set (resolved `dsh-compaction-basic`
+  0.1.0-rc.8, which lacks the summary-seed hook) followed by `pnpm run build`
+  (`tsc -b && tsdown`) and `pnpm test` (4 files / 25 tests) is fully green in
+  this repository, and `npm pack` produces a clean 27-file tarball. `tsdown`
+  and the test-only `@deepseek-ai` packages are declared in `devDependencies`
+  so the snapshot builds and tests without the monorepo toolchain. This
+  repository does not vendor those dependencies or ship its own launcher.
 
 ## Build / test
 

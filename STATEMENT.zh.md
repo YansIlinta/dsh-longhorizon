@@ -48,6 +48,25 @@
 2. seed API 发布后:本独立仓 `pnpm run build` 应为绿,然后可按需发版。
 3. 真实 LLM end-to-end + 完整仓库门禁需在正常内存、带 key/沙箱的机器复核。
 
-## 6. 许可
+## 6. 补充(2026-08-21):独立仓验证闭环完成
+
+`v0-product-closure` 分支(已在 README 记录)完成后,本独立仓做了第一次**纯发布依赖**的
+fresh 验证,结果全绿:
+
+- **seed 可选化生效**:`controller.ts` 改为 namespace 导入 + 运行时探测
+  `registerSummarySeed`,缺失时优雅降级。实测解析到 `dsh-compaction-basic@0.1.0-rc.8`
+  (仍无 seed 导出),`tsc -b` 类型检查零错误——独立构建阻塞根因解除。
+- **补齐 devDependencies**(原快照缺 `tsdown`,且测试的 `@deepseek-ai` 测试包未声明):
+  新增 `tsdown ^0.22.2` 与 `@deepseek-ai/dsh-agent-loop(-testkit)`、
+  `dsh-llm-deepseek`、`dsh-session-checkpoint-policy`、`dsh-session-persistence-jsonl`、
+  `dsh-system-prompt`(均 `^0.1.0-rc.6`),全部仅测试/构建期使用。
+- **实测结果**:`pnpm install`(腾讯镜像)→ `pnpm run build`(`tsc -b && tsdown`,
+  产出 5 个 lib bundle)→ `pnpm test`(4 文件 / 25 用例全过:fold 16、service 3、
+  happy-path 5、keyless boot 1)→ `npm pack` 27 文件 tarball 干净。
+- 此轮改动已并入 `main`(FF 合并自 `v0-product-closure` + 本段前的修复提交)。
+
+仍遗留:真实 LLM end-to-end(需 key/沙箱)、monorepo 上游合并/发布。
+
+## 7. 许可
 
 MIT

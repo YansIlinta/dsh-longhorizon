@@ -52,12 +52,19 @@
     "@deepseek-ai/dsh-compaction-basic": "^0.1.0-rc.6"
   },
   "devDependencies": {
-    "typescript": "~5.9.0",
-    "vitest": "^4",
-    "@types/node": "^22.0.0",
-    "@deepseek-ai/dsh-agent-default-model": "0.1.0-rc.6",
     "@deepseek-ai/cordis-plugin-loader": "^1.0.2",
-    "@deepseek-ai/dsh-cmdline": "0.1.0-rc.6"
+    "@deepseek-ai/dsh-agent-default-model": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-agent-loop": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-agent-loop-testkit": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-cmdline": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-llm-deepseek": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-session-checkpoint-policy": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-session-persistence-jsonl": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-system-prompt": "^0.1.0-rc.6",
+    "@types/node": "^22.0.0",
+    "tsdown": "^0.22.2",
+    "typescript": "~5.9.0",
+    "vitest": "^4"
   },
   "scripts": {
     "build": "tsc -b && tsdown",
